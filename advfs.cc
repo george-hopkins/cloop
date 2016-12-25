@@ -84,6 +84,7 @@
 #include <map>
 #include <vector>
 #include <limits>
+#include <cstdint>
 
 using namespace std;
 
