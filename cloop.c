@@ -1,26 +1,23 @@
-/*
- *  compressed_loop.c: Read-only compressed loop blockdevice
- *  hacked up by Rusty in 1999, extended and maintained by Klaus Knopper
- *
- *  A cloop file looks like this:
- *  [32-bit uncompressed block size: network order]
- *  [32-bit number of blocks (n_blocks): network order]
- *  [64-bit file offsets of start of blocks: network order]
- *    ...
- *    (n_blocks + 1).
- * n_blocks consisting of:
- *   [compressed block]
- *
- * Every version greatly inspired by code seen in loop.c
- * by Theodore Ts'o, 3/29/93.
- *
- * Copyright 1999-2009 by Paul `Rusty' Russell & Klaus Knopper.
- * Redistribution of this file is permitted under the GNU Public License.
- *
- */
+/************************************************************************\
+* cloop.c: Read-only compressed loop blockdevice                         *
+* hacked up by Rusty in 1999, extended and maintained by Klaus Knopper   *
+*                                                                        *
+* For all supported cloop file formats, please check the file "cloop.h"  *
+* New in Version 4:                                                      *
+* - Header can be first or last in cloop file,                           *
+* - Different compression algorithms supported (compression type         *
+*   encoded in first 4 bytes of block offset address)                    *
+*                                                                        *
+* Every version greatly inspired by code seen in loop.c                  *
+* by Theodore Ts'o, 3/29/93.                                             *
+*                                                                        *
+* Copyright 1999-2009 by Paul `Rusty' Russell & Klaus Knopper.           *
+* Redistribution of this file is permitted under the GNU Public License  *
+* V2.                                                                    *
+\************************************************************************/
 
 #define CLOOP_NAME "cloop"
-#define CLOOP_VERSION "3.14"
+#define CLOOP_VERSION "4.3"
 #define CLOOP_MAX 8
 
 #ifndef KBUILD_MODNAME
@@ -47,8 +44,27 @@
 #include <asm/div64.h> /* do_div() for 64bit division */
 #include <asm/uaccess.h>
 #include <asm/byteorder.h>
-/* Use zlib_inflate from lib/zlib_inflate */
+/* Check for ZLIB, LZO1X, LZ4 decompression algorithms in kernel. */
+#if (defined(CONFIG_ZLIB_INFLATE) || defined(CONFIG_ZLIB_INFLATE_MODULE))
 #include <linux/zutil.h>
+#endif
+#if (defined(CONFIG_LZO_DECOMPRESS) || defined(CONFIG_LZO_DECOMPRESS_MODULE))
+#include <linux/lzo.h>
+#endif
+#if (defined(CONFIG_DECOMPRESS_LZ4) || defined(CONFIG_DECOMPRESS_LZ4_MODULE))
+#include <linux/lz4.h>
+#endif
+#if (defined(CONFIG_DECOMPRESS_LZMA) || defined(CONFIG_DECOMPRESS_LZMA_MODULE))
+#include <linux/decompress/unlzma.h>
+#endif
+#if (defined(CONFIG_DECOMPRESS_XZ) || defined(CONFIG_DECOMPRESS_XZ_MODULE))
+#include <linux/xz.h>
+#endif
+
+#if (!(defined(CONFIG_ZLIB_INFLATE) || defined(CONFIG_ZLIB_INFLATE_MODULE) || defined(CONFIG_LZO_DECOMPRESS) || defined(CONFIG_LZO_DECOMPRESS_MODULE) || defined(CONFIG_DECOMPRESS_LZ4) || defined(CONFIG_DECOMPRESS_LZ4_MODULE) || defined(CONFIG_DECOMPRESS_LZMA) || defined(CONFIG_DECOMPRESS_LZMA_MODULE) || defined(CONFIG_DECOMPRESS_XZ) || defined(CONFIG_DECOMPRESS_XZ_MODULE)))
+#error "No decompression library selected in kernel config!"
+#endif
+
 #include <linux/loop.h>
 #include <linux/kthread.h>
 #include <linux/compat.h>
@@ -92,47 +108,64 @@ MODULE_DESCRIPTION("Transparently decompressing loopback block device");
 #define DEBUGP(format, x...)
 #endif
 
+/* Default size of buffer to keep some decompressed blocks in memory to speed up access */
+#define BLOCK_BUFFER_MEM (16*65536)
+
 /* One file can be opened at module insertion time */
 /* insmod cloop file=/path/to/file */
 static char *file=NULL;
 static unsigned int preload=0;
 static unsigned int cloop_max=CLOOP_MAX;
+static unsigned int buffers=BLOCK_BUFFER_MEM;
 module_param(file, charp, 0);
 module_param(preload, uint, 0);
 module_param(cloop_max, uint, 0);
 MODULE_PARM_DESC(file, "Initial cloop image file (full path) for /dev/cloop");
 MODULE_PARM_DESC(preload, "Preload n blocks of cloop data into memory");
 MODULE_PARM_DESC(cloop_max, "Maximum number of cloop devices (default 8)");
+MODULE_PARM_DESC(buffers, "Size of buffer to keep uncompressed blocks in memory in MiB (default 1)");
 
 static struct file *initial_file=NULL;
 static int cloop_major=MAJOR_NR;
 
-/* Number of buffered decompressed blocks */
-#define BUFFERED_BLOCKS 8
 struct cloop_device
 {
- /* Copied straight from the file */
+ /* Header filled from the file */
  struct cloop_head head;
+ int header_first;
+ int file_format;
 
- /* An array of offsets of compressed blocks within the file */
- loff_t *offsets;
+ /* An or'd sum of all flags of each compressed block (v3) */
+ u_int32_t allflags;
+
+ /* An array of cloop_ptr flags/offset for compressed blocks within the file */
+ cloop_block_ptr *block_ptrs;
 
  /* We buffer some uncompressed blocks for performance */
- int buffered_blocknum[BUFFERED_BLOCKS];
- int current_bufnum;
- void *buffer[BUFFERED_BLOCKS];
- void *compressed_buffer;
- size_t preload_array_size; /* Size of pointer array in blocks */
- size_t preload_size;       /* Number of successfully allocated blocks */
- char **preload_cache;      /* Pointers to preloaded blocks */
+ size_t num_buffered_blocks;	/* how many uncompressed blocks buffered for performance */
+ int *buffered_blocknum;        /* list of numbers of uncompressed blocks in buffer */
+ int current_bufnum;            /* which block is current */
+ unsigned char **buffer;        /* cache space for num_buffered_blocks uncompressed blocks */
+ void *compressed_buffer;       /* space for the largest compressed block */
+ size_t preload_array_size;     /* Size of pointer array in blocks */
+ size_t preload_size;           /* Number of successfully allocated blocks */
+ char **preload_cache;          /* Pointers to preloaded blocks */
 
+#if (defined(CONFIG_ZLIB_INFLATE) || defined(CONFIG_ZLIB_INFLATE_MODULE))
  z_stream zstream;
+#endif
+#if (defined(CONFIG_DECOMPRESS_XZ) || defined(CONFIG_DECOMPRESS_XZ_MODULE))
+ struct xz_dec *xzdecoderstate;
+ struct xz_buf xz_buffer;
+#endif
 
  struct file   *backing_file;  /* associated file */
  struct inode  *backing_inode; /* for bmap */
 
+ unsigned char *underlying_filename;
  unsigned long largest_block;
  unsigned int underlying_blksize;
+ loff_t underlying_total_size;
  int clo_number;
  int refcnt;
  struct block_device *bdev;
@@ -147,7 +180,6 @@ struct cloop_device
  struct request_queue *clo_queue;
  struct gendisk *clo_disk;
  int suspended;
- char clo_file_name[LO_NAME_SIZE];
 };
 
 /* Changed in 2.639: cloop_dev is now a an array of cloop_dev pointers,
@@ -156,12 +188,6 @@ static struct cloop_device **cloop_dev;
 static const char *cloop_name=CLOOP_NAME;
 static int cloop_count = 0;
 
-#if (!(defined(CONFIG_ZLIB_INFLATE) || defined(CONFIG_ZLIB_INFLATE_MODULE))) /* Must be compiled into kernel. */
-#error  "Invalid Kernel configuration. CONFIG_ZLIB_INFLATE support is needed for cloop."
-#endif
-
-/* Use __get_free_pages instead of vmalloc, allows up to 32 pages,
- * 2MB in one piece */
 static void *cloop_malloc(size_t size)
 {
  /* kmalloc will fail after the system is running for a while, */
@@ -186,26 +212,86 @@ static void cloop_free(void *mem, size_t size)
  vfree(mem);
 }
 
-static int uncompress(struct cloop_device *clo,
-                      unsigned char *dest, unsigned long *destLen,
-                      unsigned char *source, unsigned long sourceLen)
+/* static int uncompress(struct cloop_device *clo, unsigned char *dest, unsigned long *destLen, unsigned char *source, unsigned long sourceLen) */
+static int uncompress(struct cloop_device *clo, u_int32_t block_num, u_int32_t compressed_length, unsigned long *uncompressed_length)
 {
- /* Most of this code can be found in fs/cramfs/uncompress.c */
- int err;
- clo->zstream.next_in = source;
- clo->zstream.avail_in = sourceLen;
- clo->zstream.next_out = dest;
- clo->zstream.avail_out = *destLen;
- err = zlib_inflateReset(&clo->zstream);
- if (err != Z_OK)
+ int err = -1;
+ int flags = CLOOP_BLOCK_FLAGS(clo->block_ptrs[block_num]);
+ switch(flags)
+ {
+  case CLOOP_COMPRESSOR_NONE:
+   /* block is umcompressed, swap pointers only! */
+   { char *tmp = clo->compressed_buffer; clo->compressed_buffer = clo->buffer[clo->current_bufnum]; clo->buffer[clo->current_bufnum] = tmp; }
+   DEBUGP("cloop: block %d is uncompressed (flags=%d), just swapping %u bytes\n", block_num, flags, compressed_length);
+   break;
+#if (defined(CONFIG_ZLIB_INFLATE) || defined(CONFIG_ZLIB_INFLATE_MODULE))
+  case CLOOP_COMPRESSOR_ZLIB:
+   clo->zstream.next_in = clo->compressed_buffer;
+   clo->zstream.avail_in = compressed_length;
+   clo->zstream.next_out = clo->buffer[clo->current_bufnum];
+   clo->zstream.avail_out = clo->head.block_size;
+   err = zlib_inflateReset(&clo->zstream);
+   if (err != Z_OK)
+   {
+    printk(KERN_ERR "%s: zlib_inflateReset error %d\n", cloop_name, err);
+    zlib_inflateEnd(&clo->zstream); zlib_inflateInit(&clo->zstream);
+   }
+   err = zlib_inflate(&clo->zstream, Z_FINISH);
+   *uncompressed_length = clo->zstream.total_out;
+   if (err == Z_STREAM_END) err = 0;
+   DEBUGP("cloop: zlib decompression done, ret =%d, size =%lu\n", err, *uncompressed_length);
+   break;
+#endif
+#if (defined(CONFIG_LZO_DECOMPRESS) || defined(CONFIG_LZO_DECOMPRESS_MODULE))
+  case CLOOP_COMPRESSOR_LZO1X:
+   {
+    size_t tmp = (size_t) clo->head.block_size;
+    err = lzo1x_decompress_safe(clo->compressed_buffer, compressed_length,
+             clo->buffer[clo->current_bufnum], &tmp);
+    if (err == LZO_E_OK) *uncompressed_length = (u_int32_t) tmp;
+   }
+   break;
+#endif
+#if (defined(CONFIG_DECOMPRESS_LZ4) || defined(CONFIG_DECOMPRESS_LZ4_MODULE))
+  case CLOOP_COMPRESSOR_LZ4:
+   {
+    size_t outputSize = clo->head.block_size;
+    /* We should adjust outputSize here, in case the last block is smaller than block_size */
+    err = lz4_decompress(clo->compressed_buffer, (size_t *) &compressed_length,
+                         clo->buffer[clo->current_bufnum], outputSize);
+    if (err >= 0) 
+    {
+     err = 0;
+     *uncompressed_length = outputSize;
+    }
+   }
+  break;
+#endif
+#if (defined(CONFIG_DECOMPRESS_XZ) || defined(CONFIG_DECOMPRESS_XZ_MODULE))
+ case CLOOP_COMPRESSOR_XZ:
+  clo->xz_buffer.in = clo->compressed_buffer;
+  clo->xz_buffer.in_pos = 0;
+  clo->xz_buffer.in_size = compressed_length;
+  clo->xz_buffer.out = clo->buffer[clo->current_bufnum];
+  clo->xz_buffer.out_pos = 0;
+  clo->xz_buffer.out_size = clo->head.block_size;
+  xz_dec_reset(clo->xzdecoderstate);
+  err = xz_dec_run(clo->xzdecoderstate, &clo->xz_buffer);
+  if (err == XZ_STREAM_END || err == XZ_OK)
   {
-   printk(KERN_ERR "%s: zlib_inflateReset error %d\n", cloop_name, err);
-   zlib_inflateEnd(&clo->zstream); zlib_inflateInit(&clo->zstream);
+   err = 0;
   }
- err = zlib_inflate(&clo->zstream, Z_FINISH);
- *destLen = clo->zstream.total_out;
- if (err != Z_STREAM_END) return err;
- return Z_OK;
+  else
+  {
+   printk(KERN_ERR "%s: xz_dec_run error %d\n", cloop_name, err);
+   err = 1;
+  }
+  break;
+#endif
+ default:
+   printk(KERN_ERR "%s: compression method is not supported!\n", cloop_name);
+ }
+ return err;
 }
 
 static ssize_t cloop_read_from_file(struct cloop_device *clo, struct file *f, char *buf,
@@ -224,7 +310,7 @@ static ssize_t cloop_read_from_file(struct cloop_device *clo, struct file *f, ch
 
    if(size_read <= 0)
     {
-     printk(KERN_ERR "%s: Read error %d at pos %Lu in file %s, "
+     printk(KERN_ERR "%s: Read error %d at pos %llu in file %s, "
                      "%d bytes lost.\n", cloop_name, (int)size_read, pos,
 		     file, (int)size);
      memset(buf + buf_len - size, 0, size);
@@ -236,81 +322,82 @@ static ssize_t cloop_read_from_file(struct cloop_device *clo, struct file *f, ch
 }
 
 /* This looks more complicated than it is */
-/* Returns number of block buffer to use for this request */
+/* Returns number of cache block buffer to use for this request */
 static int cloop_load_buffer(struct cloop_device *clo, int blocknum)
 {
- unsigned int buf_done = 0;
- unsigned long buflen;
- unsigned int buf_length;
+ loff_t compressed_block_offset;
+ long compressed_block_len;
+ long uncompressed_block_len=0;
  int ret;
  int i;
- if(blocknum > ntohl(clo->head.num_blocks) || blocknum < 0)
-  {
-   printk(KERN_WARNING "%s: Invalid block number %d requested.\n",
-                       cloop_name, blocknum);
-   return -1;
-  }
+ if(blocknum > clo->head.num_blocks || blocknum < 0)
+ {
+  printk(KERN_WARNING "%s: Invalid block number %d requested.\n",
+         cloop_name, blocknum);
+  return -1;
+ }
 
  /* Quick return if the block we seek is already in one of the buffers. */
  /* Return number of buffer */
- for(i=0; i<BUFFERED_BLOCKS; i++)
+ for(i=0; i<clo->num_buffered_blocks; i++)
   if (blocknum == clo->buffered_blocknum[i])
+  {
+   DEBUGP(KERN_INFO "cloop_load_buffer: Found buffered block %d\n", i);
+   return i;
+  }
+
+ compressed_block_offset = CLOOP_BLOCK_OFFSET(clo->block_ptrs[blocknum]);
+ compressed_block_len = (long) (CLOOP_BLOCK_OFFSET(clo->block_ptrs[blocknum+1]) - compressed_block_offset) ;
+
+ /* Load one compressed block from the file. */
+ if(compressed_block_offset > 0 && compressed_block_len >= 0) /* sanity check */
+ {
+  size_t n = cloop_read_from_file(clo, clo->backing_file, (char *)clo->compressed_buffer,
+                    compressed_block_offset, compressed_block_len);
+  if (n!= compressed_block_len)
    {
-    DEBUGP(KERN_INFO "cloop_load_buffer: Found buffered block %d\n", i);
-    return i;
+    printk(KERN_ERR "%s: error while reading %lu bytes @ %llu from file %s\n",
+     cloop_name, compressed_block_len, clo->block_ptrs[blocknum], clo->underlying_filename);
+    /* return -1; */
    }
-
- buf_length = be64_to_cpu(clo->offsets[blocknum+1]) - be64_to_cpu(clo->offsets[blocknum]);
-
-/* Load one compressed block from the file. */
- cloop_read_from_file(clo, clo->backing_file, (char *)clo->compressed_buffer,
-                    be64_to_cpu(clo->offsets[blocknum]), buf_length);
-
- buflen = ntohl(clo->head.block_size);
-
- /* Go to next position in the block ring buffer */
- clo->current_bufnum++;
- if(clo->current_bufnum >= BUFFERED_BLOCKS) clo->current_bufnum = 0;
+ } else {
+  printk(KERN_ERR "%s: invalid data block len %ld bytes @ %lld from file %s\n",
+  cloop_name, compressed_block_len, clo->block_ptrs[blocknum], clo->underlying_filename);
+  return -1;
+ }
+  
+ /* Go to next position in the cache block buffer (which is used as a cyclic buffer) */
+ if(++clo->current_bufnum >= clo->num_buffered_blocks) clo->current_bufnum = 0;
 
  /* Do the uncompression */
- ret = uncompress(clo, clo->buffer[clo->current_bufnum], &buflen, clo->compressed_buffer,
-                  buf_length);
+ ret = uncompress(clo, blocknum, compressed_block_len, &uncompressed_block_len);
  /* DEBUGP("cloop: buflen after uncompress: %ld\n",buflen); */
  if (ret != 0)
-  {
-   printk(KERN_ERR "%s: zlib decompression error %i uncompressing block %u %u/%lu/%u/%u "
-          "%Lu-%Lu\n", cloop_name, ret, blocknum,
-	  ntohl(clo->head.block_size), buflen, buf_length, buf_done,
-	  be64_to_cpu(clo->offsets[blocknum]), be64_to_cpu(clo->offsets[blocknum+1]));
-   clo->buffered_blocknum[clo->current_bufnum] = -1;
-   return -1;
-  }
+ {
+  printk(KERN_ERR "%s: decompression error %i uncompressing block %u %lu bytes @ %llu, flags %u\n",
+         cloop_name, ret, blocknum,
+         compressed_block_len, CLOOP_BLOCK_OFFSET(clo->block_ptrs[blocknum]),
+         CLOOP_BLOCK_FLAGS(clo->block_ptrs[blocknum]));
+         clo->buffered_blocknum[clo->current_bufnum] = -1;
+  return -1;
+ }
  clo->buffered_blocknum[clo->current_bufnum] = blocknum;
  return clo->current_bufnum;
 }
 
 /* This function does all the real work. */
-/* returns "uptodate" */
+/* returns "uptodate"                    */
 static int cloop_handle_request(struct cloop_device *clo, struct request *req)
 {
  int buffered_blocknum = -1;
  int preloaded = 0;
  loff_t offset     = (loff_t) blk_rq_pos(req)<<9; /* req->sector<<9 */
-#if LINUX_VERSION_CODE < KERNEL_VERSION(3,14,0)
-struct bio_vec *bvec;
-#else 
  struct bio_vec bvec;
-#endif
  struct req_iterator iter;
  rq_for_each_segment(bvec, req, iter)
   {
-#if LINUX_VERSION_CODE < KERNEL_VERSION(3,14,0)
-   unsigned long len = bvec->bv_len;
-   char *to_ptr      = kmap(bvec->bv_page) + bvec->bv_offset;
-#else
    unsigned long len = bvec.bv_len;
    char *to_ptr      = kmap(bvec.bv_page) + bvec.bv_offset;
-#endif
    while(len > 0)
     {
      u_int32_t length_in_buffer;
@@ -321,7 +408,7 @@ struct bio_vec *bvec;
      /* puts the result in the first argument, i.e. block_offset   */
      /* becomes the blocknumber to load, and offset_in_buffer the  */
      /* position in the buffer */
-     offset_in_buffer = do_div(block_offset, ntohl(clo->head.block_size));
+     offset_in_buffer = do_div(block_offset, clo->head.block_size);
      /* Lookup preload cache */
      if(block_offset < clo->preload_size && clo->preload_cache != NULL &&
         clo->preload_cache[block_offset] != NULL)
@@ -338,7 +425,7 @@ struct bio_vec *bvec;
        from_ptr = clo->buffer[buffered_blocknum];
       }
      /* Now, at least part of what we want will be in the buffer. */
-     length_in_buffer = ntohl(clo->head.block_size) - offset_in_buffer;
+     length_in_buffer = clo->head.block_size - offset_in_buffer;
      if(length_in_buffer > len)
       {
 /*   DEBUGP("Warning: length_in_buffer=%u > len=%u\n",
@@ -350,22 +437,18 @@ struct bio_vec *bvec;
      len         -= length_in_buffer;
      offset      += length_in_buffer;
     } /* while inner loop */
-#if LINUX_VERSION_CODE < KERNEL_VERSION(3,14,0)
-   kunmap(bvec->bv_page);
-#else
    kunmap(bvec.bv_page);
-#endif
   } /* end rq_for_each_segment*/
  return ((buffered_blocknum!=-1) || preloaded);
 }
 
 /* Adopted from loop.c, a kernel thread to handle physical reads and
- * decompression. */
+   decompression. */
 static int cloop_thread(void *data)
 {
  struct cloop_device *clo = data;
  current->flags |= PF_NOFREEZE;
- set_user_nice(current, -15);
+ set_user_nice(current, 10);
  while (!kthread_should_stop()||!list_empty(&clo->clo_list))
   {
    int err;
@@ -431,35 +514,42 @@ static void cloop_do_request(struct request_queue *q)
   }
 }
 
-/* Read header and offsets from already opened file */
-static int cloop_set_file(int cloop_num, struct file *file, char *filename)
+/* Read header, flags and offsets from already opened file */
+static int cloop_set_file(int cloop_num, struct file *file)
 {
  struct cloop_device *clo = cloop_dev[cloop_num];
  struct inode *inode;
  char *bbuf=NULL;
- unsigned int i, offsets_read, total_offsets;
- int isblkdev;
- int error = 0;
+ unsigned int bbuf_size = 0;
+ const unsigned int header_size = sizeof(struct cloop_head);
+ unsigned int i, offsets_read=0, total_offsets=0;
+ loff_t fs_read_position = 0, header_pos[2];
+ int isblkdev, bytes_read, error = 0;
+ if (clo->suspended) return error;
+ #if LINUX_VERSION_CODE < KERNEL_VERSION(4, 0, 0)
+ inode = file->f_dentry->d_inode;
+ clo->underlying_filename = kstrdup(file->f_dentry->d_name.name ? file->f_dentry->d_name.name : (const unsigned char *)"anonymous filename", GFP_KERNEL);
+ #else
  inode = file->f_path.dentry->d_inode;
+ clo->underlying_filename = kstrdup(file->f_path.dentry->d_name.name ? file->f_path.dentry->d_name.name : (const unsigned char *)"anonymous filename", GFP_KERNEL);
+ #endif
  isblkdev=S_ISBLK(inode->i_mode)?1:0;
  if(!isblkdev&&!S_ISREG(inode->i_mode))
   {
    printk(KERN_ERR "%s: %s not a regular file or block device\n",
-		   cloop_name, filename);
+		   cloop_name, clo->underlying_filename);
    error=-EBADF; goto error_release;
   }
  clo->backing_file = file;
  clo->backing_inode= inode ;
- if(!isblkdev&&inode->i_size<sizeof(struct cloop_head))
+ clo->underlying_total_size = (isblkdev) ? inode->i_bdev->bd_inode->i_size : inode->i_size;
+ if(clo->underlying_total_size < header_size)
   {
-   printk(KERN_ERR "%s: %lu bytes (must be >= %u bytes)\n",
-                   cloop_name, (unsigned long)inode->i_size,
-		   (unsigned)sizeof(struct cloop_head));
+   printk(KERN_ERR "%s: %llu bytes (must be >= %u bytes)\n",
+                   cloop_name, clo->underlying_total_size,
+		   (unsigned int)header_size);
    error=-EBADF; goto error_release;
   }
- /* In suspended mode, we have done all checks necessary - FF */
- if (clo->suspended)
-   return error;
  if(isblkdev)
   {
    struct request_queue *q = bdev_get_queue(inode->i_bdev);
@@ -468,104 +558,159 @@ static int cloop_set_file(int cloop_num, struct file *file, char *filename)
    /* blk_queue_max_hw_segments(clo->clo_queue, queue_max_hw_segments(q)); */ /* Removed in 2.6.34 */
    blk_queue_max_segment_size(clo->clo_queue, queue_max_segment_size(q));
    blk_queue_segment_boundary(clo->clo_queue, queue_segment_boundary(q));
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 3, 0)
    blk_queue_merge_bvec(clo->clo_queue, q->merge_bvec_fn);
+#endif
    clo->underlying_blksize = block_size(inode->i_bdev);
   }
  else
    clo->underlying_blksize = PAGE_SIZE;
- DEBUGP("Underlying blocksize is %u\n", clo->underlying_blksize);
- bbuf = cloop_malloc(clo->underlying_blksize);
+
+ DEBUGP(KERN_INFO "Underlying blocksize of %s is %u\n", clo->underlying_filename, clo->underlying_blksize);
+ DEBUGP(KERN_INFO "Underlying total size of %s is %llu\n", clo->underlying_filename, clo->underlying_total_size);
+
+ /* clo->underlying_blksize should be larger than header_size, even if it's only PAGE_SIZE */
+ bbuf_size = clo->underlying_blksize;
+ bbuf = cloop_malloc(bbuf_size);
  if(!bbuf)
   {
-   printk(KERN_ERR "%s: out of kernel mem for block buffer (%lu bytes)\n",
-                   cloop_name, (unsigned long)clo->underlying_blksize);
+   printk(KERN_ERR "%s: out of kernel mem for buffer (%u bytes)\n",
+                   cloop_name, (unsigned int) bbuf_size);
    error=-ENOMEM; goto error_release;
   }
- total_offsets = 1; /* Dummy total_offsets: will be filled in first time around */
- for (i = 0, offsets_read = 0; offsets_read < total_offsets; i++)
+
+ header_pos[0] = 0; /* header first */
+ header_pos[1] = clo->underlying_total_size - sizeof(struct cloop_head); /* header last */
+ for(i=0; i<2; i++)
   {
-   unsigned int offset = 0, num_readable;
-   size_t bytes_read = cloop_read_from_file(clo, file, bbuf,
-                                          i*clo->underlying_blksize,
-                                          clo->underlying_blksize);
-   if(bytes_read != clo->underlying_blksize)
+   /* Check for header */
+   size_t bytes_readable = MIN(clo->underlying_blksize, clo->underlying_total_size - header_pos[i]);
+   size_t bytes_read = cloop_read_from_file(clo, file, bbuf, header_pos[i], bytes_readable);
+   if(bytes_read != bytes_readable)
+   {
+    printk(KERN_ERR "%s: Bad file %s, read() of %s %u bytes returned %d.\n",
+                    cloop_name, clo->underlying_filename, (i==0)?"first":"last",
+		    (unsigned int)header_size, (int)bytes_read);
+    error=-EBADF;
+    goto error_release;
+   }
+   memcpy(&clo->head, bbuf, header_size);
+   if (strncmp(bbuf+CLOOP4_SIGNATURE_OFFSET, CLOOP4_SIGNATURE, CLOOP4_SIGNATURE_SIZE)==0)
+   {
+    clo->file_format=4;
+    clo->head.block_size=ntohl(clo->head.block_size);
+    clo->head.num_blocks=ntohl(clo->head.num_blocks);
+    clo->header_first =  (i==0) ? 1 : 0;
+    printk(KERN_INFO "%s: file %s version %d, %d blocks of %d bytes, header %s.\n", cloop_name, clo->underlying_filename, clo->file_format, clo->head.num_blocks, clo->head.block_size, (i==0)?"first":"last");
+    break;
+   }
+   else if (strncmp(bbuf+CLOOP2_SIGNATURE_OFFSET, CLOOP2_SIGNATURE, CLOOP2_SIGNATURE_SIZE)==0)
+   {
+    clo->file_format=2;
+    clo->head.block_size=ntohl(clo->head.block_size);
+    clo->head.num_blocks=ntohl(clo->head.num_blocks);
+    clo->header_first =  (i==0) ? 1 : 0;
+    printk(KERN_INFO "%s: file %s version %d, %d blocks of %d bytes, header %s.\n", cloop_name, clo->underlying_filename, clo->file_format, clo->head.num_blocks, clo->head.block_size, (i==0)?"first":"last");
+    break;
+   }
+  }
+ if (clo->file_format == 0)
+  {
+   printk(KERN_ERR "%s: Cannot read old 32-bit (version 0.68) images, "
+                   "please use an older version of %s for this file.\n",
+                   cloop_name, cloop_name);
+       error=-EBADF; goto error_release;
+  }
+ if (clo->head.block_size % 512 != 0)
+  {
+   printk(KERN_ERR "%s: blocksize %u not multiple of 512\n",
+          cloop_name, clo->head.block_size);
+   error=-EBADF; goto error_release;
+  }
+ total_offsets=clo->head.num_blocks+1;
+ if (!isblkdev && (sizeof(struct cloop_head)+sizeof(loff_t)*
+                      total_offsets > inode->i_size))
+  {
+   printk(KERN_ERR "%s: file %s too small for %u blocks\n",
+          cloop_name, clo->underlying_filename, clo->head.num_blocks);
+   error=-EBADF; goto error_release;
+  }
+ clo->block_ptrs = cloop_malloc(sizeof(cloop_block_ptr) * total_offsets);
+ if (!clo->block_ptrs)
+  {
+   printk(KERN_ERR "%s: out of kernel mem for offsets\n", cloop_name);
+   error=-ENOMEM; goto error_release;
+  }
+ /* Read them offsets! */
+ if(clo->header_first)
+  {
+   fs_read_position = sizeof(struct cloop_head);
+  }
+ else
+  {
+   fs_read_position = clo->underlying_total_size - sizeof(struct cloop_head) - total_offsets * sizeof(loff_t);
+  }
+ for(offsets_read=0;offsets_read<total_offsets;)
+  {
+   size_t bytes_readable;
+   unsigned int num_readable, offset = 0;
+   bytes_readable = MIN(bbuf_size, clo->underlying_total_size - fs_read_position);
+   if(bytes_readable <= 0) break; /* Done */
+   bytes_read = cloop_read_from_file(clo, file, bbuf, fs_read_position, bytes_readable);
+   if(bytes_read != bytes_readable)
     {
-     printk(KERN_ERR "%s: Bad file, read() of first %lu bytes returned %d.\n",
-                   cloop_name, (unsigned long)clo->underlying_blksize, (int)bytes_read);
+     printk(KERN_ERR "%s: Bad file %s, read() %lu bytes @ %llu returned %d.\n",
+            cloop_name, clo->underlying_filename, (unsigned long)clo->underlying_blksize, fs_read_position, (int)bytes_read);
      error=-EBADF;
      goto error_release;
     }
-   /* Header will be in block zero */
-   if(i==0)
-    {
-     memcpy(&clo->head, bbuf, sizeof(struct cloop_head));
-     offset = sizeof(struct cloop_head);
-     if (ntohl(clo->head.block_size) % 512 != 0)
-      {
-       printk(KERN_ERR "%s: blocksize %u not multiple of 512\n",
-              cloop_name, ntohl(clo->head.block_size));
-       error=-EBADF; goto error_release;
-      }
-     if (clo->head.preamble[0x0B]!='V'||clo->head.preamble[0x0C]<'1')
-      {
-       printk(KERN_ERR "%s: Cannot read old 32-bit (version 0.68) images, "
-		       "please use an older version of %s for this file.\n",
-		       cloop_name, cloop_name);
-       error=-EBADF; goto error_release;
-      }
-     if (clo->head.preamble[0x0C]<'2')
-      {
-       printk(KERN_ERR "%s: Cannot read old architecture-dependent "
-		       "(format <= 1.0) images, please use an older "
-		       "version of %s for this file.\n",
-		       cloop_name, cloop_name);
-       error=-EBADF; goto error_release;
-      }
-     total_offsets=ntohl(clo->head.num_blocks)+1;
-     if (!isblkdev && (sizeof(struct cloop_head)+sizeof(loff_t)*
-                       total_offsets > inode->i_size))
-      {
-       printk(KERN_ERR "%s: file too small for %u blocks\n",
-              cloop_name, ntohl(clo->head.num_blocks));
-       error=-EBADF; goto error_release;
-      }
-     clo->offsets = cloop_malloc(sizeof(loff_t) * total_offsets);
-     if (!clo->offsets)
-      {
-       printk(KERN_ERR "%s: out of kernel mem for offsets\n", cloop_name);
-       error=-ENOMEM; goto error_release;
-      }
-    }
+   /* remember where to read the next blk from file */
+   fs_read_position += bytes_read;
+   /* calculate how many offsets can be taken from current bbuf */
    num_readable = MIN(total_offsets - offsets_read,
-                      (clo->underlying_blksize - offset) 
-                      / sizeof(loff_t));
-   memcpy(&clo->offsets[offsets_read], bbuf+offset, num_readable * sizeof(loff_t));
-   offsets_read += num_readable;
-  }
-  { /* Search for largest block rather than estimate. KK. */
-   int i;
-   for(i=0;i<total_offsets-1;i++)
+                      bytes_read / sizeof(loff_t));
+   DEBUGP(KERN_INFO "cloop: parsing %d offsets %d to %d\n", num_readable, offsets_read, offsets_read+num_readable-1);
+   for (i=0,offset=0; i<num_readable; i++)
     {
-     loff_t d=be64_to_cpu(clo->offsets[i+1]) - be64_to_cpu(clo->offsets[i]);
-     clo->largest_block=MAX(clo->largest_block,d);
+     loff_t tmp = be64_to_cpu( *(loff_t*) (bbuf+offset) );
+     if (i%50==0) DEBUGP(KERN_INFO "cloop: offset %03d: %llu\n", offsets_read, tmp);
+     if(offsets_read > 0)
+      {
+       loff_t d = CLOOP_BLOCK_OFFSET(tmp) - CLOOP_BLOCK_OFFSET(clo->block_ptrs[offsets_read-1]);
+       if(d > clo->largest_block) clo->largest_block = d;
+      }
+     clo->block_ptrs[offsets_read++] = tmp;
+     offset += sizeof(loff_t);
     }
-   printk(KERN_INFO "%s: %s: %u blocks, %u bytes/block, largest block is %lu bytes.\n",
-          cloop_name, filename, ntohl(clo->head.num_blocks),
-          ntohl(clo->head.block_size), clo->largest_block);
   }
-/* Combo kmalloc used too large chunks (>130000). */
+  printk(KERN_INFO "%s: %s: %u blocks, %u bytes/block, largest block is %lu bytes.\n",
+         cloop_name, clo->underlying_filename, clo->head.num_blocks,
+         clo->head.block_size, clo->largest_block);
  {
   int i;
-  for(i=0;i<BUFFERED_BLOCKS;i++)
-   {
-    clo->buffer[i] = cloop_malloc(ntohl(clo->head.block_size));
-    if(!clo->buffer[i])
-     {
-      printk(KERN_ERR "%s: out of memory for buffer %lu\n",
-             cloop_name, (unsigned long) ntohl(clo->head.block_size));
-      error=-ENOMEM; goto error_release_free;
-     }
-   }
+  clo->num_buffered_blocks = (buffers > 0 && clo->head.block_size >= 512) ?
+                              (buffers / clo->head.block_size) : 1;
+  clo->buffered_blocknum = cloop_malloc(clo->num_buffered_blocks * sizeof (u_int32_t));
+  clo->buffer = cloop_malloc(clo->num_buffered_blocks * sizeof (char*));
+  if (!clo->buffered_blocknum || !clo->buffer)
+  {
+   printk(KERN_ERR "%s: out of memory for index of cache buffer (%lu bytes)\n",
+                    cloop_name, (unsigned long)clo->num_buffered_blocks * sizeof (u_int32_t) + sizeof(char*) );
+                    error=-ENOMEM; goto error_release;
+  }
+  memset(clo->buffer, 0, clo->num_buffered_blocks * sizeof (char*));
+  for(i=0;i<clo->num_buffered_blocks;i++)
+  {
+   clo->buffered_blocknum[i] = -1;
+   clo->buffer[i] = cloop_malloc(clo->head.block_size);
+   if(!clo->buffer[i])
+    {
+     printk(KERN_ERR "%s: out of memory for cache buffer %lu\n",
+            cloop_name, (unsigned long) clo->head.block_size);
+     error=-ENOMEM; goto error_release_free;
+    }
+  }
+  clo->current_bufnum = 0;
  }
  clo->compressed_buffer = cloop_malloc(clo->largest_block);
  if(!clo->compressed_buffer)
@@ -574,6 +719,8 @@ static int cloop_set_file(int cloop_num, struct file *file, char *filename)
           cloop_name, clo->largest_block);
    error=-ENOMEM; goto error_release_free_buffer;
   }
+ /* Allocate Memory for decompressors */
+#if (defined(CONFIG_ZLIB_INFLATE) || defined(CONFIG_ZLIB_INFLATE_MODULE))
  clo->zstream.workspace = cloop_malloc(zlib_inflate_workspacesize());
  if(!clo->zstream.workspace)
   {
@@ -582,23 +729,26 @@ static int cloop_set_file(int cloop_num, struct file *file, char *filename)
    error=-ENOMEM; goto error_release_free_all;
   }
  zlib_inflateInit(&clo->zstream);
- if(!isblkdev &&
-    be64_to_cpu(clo->offsets[ntohl(clo->head.num_blocks)]) != inode->i_size)
+#endif
+#if (defined(CONFIG_DECOMPRESS_XZ) || defined(CONFIG_DECOMPRESS_XZ_MODULE))
+#if XZ_INTERNAL_CRC32
+  /* This must be called before any other xz_* function to initialize the CRC32 lookup table. */
+  xz_crc32_init(void);
+#endif
+  clo->xzdecoderstate = xz_dec_init(XZ_SINGLE, 0);
+#endif
+ if(CLOOP_BLOCK_OFFSET(clo->block_ptrs[clo->head.num_blocks]) > clo->underlying_total_size)
   {
-   printk(KERN_ERR "%s: final offset wrong (%Lu not %Lu)\n",
+   printk(KERN_ERR "%s: final offset wrong (%llu > %llu)\n",
           cloop_name,
-          be64_to_cpu(clo->offsets[ntohl(clo->head.num_blocks)]),
-          inode->i_size);
+	  CLOOP_BLOCK_OFFSET(clo->block_ptrs[clo->head.num_blocks]),
+          clo->underlying_total_size);
+#if (defined(CONFIG_ZLIB_INFLATE) || defined(CONFIG_ZLIB_INFLATE_MODULE))
    cloop_free(clo->zstream.workspace, zlib_inflate_workspacesize()); clo->zstream.workspace=NULL;
+#endif
    goto error_release_free_all;
   }
- {
-  int i;
-  for(i=0; i<BUFFERED_BLOCKS; i++) clo->buffered_blocknum[i] = -1;
-  clo->current_bufnum=0;
- }
- set_capacity(clo->clo_disk, (sector_t)(ntohl(clo->head.num_blocks)*
-              (ntohl(clo->head.block_size)>>9)));
+ set_capacity(clo->clo_disk, (sector_t)(clo->head.num_blocks*(clo->head.block_size>>9)));
  clo->clo_thread = kthread_create(cloop_thread, clo, "cloop%d", cloop_num);
  if(IS_ERR(clo->clo_thread))
   {
@@ -608,17 +758,17 @@ static int cloop_set_file(int cloop_num, struct file *file, char *filename)
   }
  if(preload > 0)
   {
-   clo->preload_array_size = ((preload<=ntohl(clo->head.num_blocks))?preload:ntohl(clo->head.num_blocks));
+   clo->preload_array_size = ((preload<=clo->head.num_blocks)?preload:clo->head.num_blocks);
    clo->preload_size = 0;
    if((clo->preload_cache = cloop_malloc(clo->preload_array_size * sizeof(char *))) != NULL)
     {
      int i;
      for(i=0; i<clo->preload_array_size; i++)
       {
-       if((clo->preload_cache[i] = cloop_malloc(ntohl(clo->head.block_size))) == NULL)
+       if((clo->preload_cache[i] = cloop_malloc(clo->head.block_size)) == NULL)
         { /* Out of memory */
          printk(KERN_WARNING "%s: cloop_malloc(%d) failed for preload_cache[%d] (ignored).\n",
-                             cloop_name, ntohl(clo->head.block_size), i);
+                             cloop_name, clo->head.block_size, i);
 	 break;
 	}
       }
@@ -629,13 +779,13 @@ static int cloop_set_file(int cloop_num, struct file *file, char *filename)
        if(buffered_blocknum >= 0)
         {
 	 memcpy(clo->preload_cache[i], clo->buffer[buffered_blocknum],
-	        ntohl(clo->head.block_size));
+	        clo->head.block_size);
 	}
        else
         {
          printk(KERN_WARNING "%s: can't read block %d into preload cache, set to zero.\n",
 	                     cloop_name, i);
-	 memset(clo->preload_cache[i], 0, ntohl(clo->head.block_size));
+	 memset(clo->preload_cache[i], 0, clo->head.block_size);
 	}
       }
      printk(KERN_INFO "%s: preloaded %d blocks into cache.\n", cloop_name,
@@ -658,22 +808,19 @@ error_release_free_all:
  cloop_free(clo->compressed_buffer, clo->largest_block);
  clo->compressed_buffer=NULL;
 error_release_free_buffer:
+ if(clo->buffer)
  {
   int i;
-  for(i=0; i<BUFFERED_BLOCKS; i++)
-   { 
-    if(clo->buffer[i])
-     {
-      cloop_free(clo->buffer[i], ntohl(clo->head.block_size));
-      clo->buffer[i]=NULL;
-     }
-   }
+  for(i=0; i<clo->num_buffered_blocks; i++) { if(clo->buffer[i]) { cloop_free(clo->buffer[i], clo->head.block_size); clo->buffer[i]=NULL; }}
+  cloop_free(clo->buffer, clo->num_buffered_blocks*sizeof(char*)); clo->buffer=NULL;
  }
+ if (clo->buffered_blocknum) { cloop_free(clo->buffered_blocknum, sizeof(int)*clo->num_buffered_blocks); clo->buffered_blocknum=NULL; }
 error_release_free:
- cloop_free(clo->offsets, sizeof(loff_t) * total_offsets);
- clo->offsets=NULL;
+ cloop_free(clo->block_ptrs, sizeof(cloop_block_ptr) * total_offsets);
+ clo->block_ptrs=NULL;
 error_release:
  if(bbuf) cloop_free(bbuf, clo->underlying_blksize);
+ if(clo->underlying_filename) { kfree(clo->underlying_filename); clo->underlying_filename=NULL; }
  clo->backing_file=NULL;
  return error;
 }
@@ -690,7 +837,7 @@ static int cloop_set_fd(int cloop_num, struct file *clo_file,
  if(clo->backing_file) return -EBUSY;
  file = fget(arg); /* get filp struct from ioctl arg fd */
  if(!file) return -EBADF;
- error=cloop_set_file(cloop_num,file,"losetup_file");
+ error=cloop_set_file(cloop_num,file);
  set_device_ro(bdev, 1);
  if(error) fput(file);
  return error;
@@ -701,29 +848,48 @@ static int cloop_clr_fd(int cloop_num, struct block_device *bdev)
 {
  struct cloop_device *clo = cloop_dev[cloop_num];
  struct file *filp = clo->backing_file;
- int i;
  if(clo->refcnt > 1)	/* we needed one fd for the ioctl */
    return -EBUSY;
  if(filp==NULL) return -EINVAL;
  if(clo->clo_thread) { kthread_stop(clo->clo_thread); clo->clo_thread=NULL; }
- if(filp!=initial_file) fput(filp);
- else { filp_close(initial_file,0); initial_file=NULL; }
+ if(filp!=initial_file)
+  fput(filp);
+ else
+ {
+  filp_close(initial_file,0);
+  initial_file=NULL;
+ }
  clo->backing_file  = NULL;
  clo->backing_inode = NULL;
- if(clo->offsets) { cloop_free(clo->offsets, clo->underlying_blksize); clo->offsets = NULL; }
+ if(clo->underlying_filename) { kfree(clo->underlying_filename); clo->underlying_filename=NULL; }
+ if(clo->block_ptrs) { cloop_free(clo->block_ptrs, clo->head.num_blocks+1); clo->block_ptrs = NULL; }
  if(clo->preload_cache)
-  {
-   for(i=0; i < clo->preload_size; i++)
-    cloop_free(clo->preload_cache[i], ntohl(clo->head.block_size));
-   cloop_free(clo->preload_cache, clo->preload_array_size * sizeof(char *));
-   clo->preload_cache = NULL;
-   clo->preload_size = clo->preload_array_size = 0;
-  }
- for(i=0; i<BUFFERED_BLOCKS; i++)
-      if(clo->buffer[i]) { cloop_free(clo->buffer[i], ntohl(clo->head.block_size)); clo->buffer[i]=NULL; }
+ {
+  int i;
+  for(i=0; i < clo->preload_size; i++)
+   cloop_free(clo->preload_cache[i], clo->head.block_size);
+  cloop_free(clo->preload_cache, clo->preload_array_size * sizeof(char *));
+  clo->preload_cache = NULL;
+  clo->preload_size = clo->preload_array_size = 0;
+ }
+ if (clo->buffered_blocknum)
+ {
+  cloop_free(clo->buffered_blocknum, sizeof(int) * clo->num_buffered_blocks); clo->buffered_blocknum = NULL;
+ }
+ if (clo->buffer)
+ {
+  int i;
+  for(i=0; i<clo->num_buffered_blocks; i++) { if(clo->buffer[i]) cloop_free(clo->buffer[i], clo->head.block_size); }
+  cloop_free(clo->buffer, sizeof(char*) * clo->num_buffered_blocks); clo->buffer = NULL;
+ }
  if(clo->compressed_buffer) { cloop_free(clo->compressed_buffer, clo->largest_block); clo->compressed_buffer = NULL; }
+#if (defined(CONFIG_ZLIB_INFLATE) || defined(CONFIG_ZLIB_INFLATE_MODULE))
  zlib_inflateEnd(&clo->zstream);
  if(clo->zstream.workspace) { cloop_free(clo->zstream.workspace, zlib_inflate_workspacesize()); clo->zstream.workspace = NULL; }
+#endif
+#if (defined(CONFIG_DECOMPRESS_XZ) || defined(CONFIG_DECOMPRESS_XZ_MODULE))
+  xz_dec_end(clo->xzdecoderstate);
+#endif
  if(bdev) invalidate_bdev(bdev);
  if(clo->clo_disk) set_capacity(clo->clo_disk, 0);
  return 0;
@@ -748,8 +914,8 @@ static int cloop_set_status(struct cloop_device *clo,
                             const struct loop_info64 *info)
 {
  if (!clo->backing_file) return -ENXIO;
- memcpy(clo->clo_file_name, info->lo_file_name, LO_NAME_SIZE);
- clo->clo_file_name[LO_NAME_SIZE-1] = 0;
+ if(clo->underlying_filename) kfree(clo->underlying_filename);
+ clo->underlying_filename = kstrdup(info->lo_file_name, GFP_KERNEL);
  return 0;
 }
 
@@ -770,7 +936,8 @@ static int cloop_get_status(struct cloop_device *clo,
  info->lo_offset  = 0;
  info->lo_sizelimit = 0;
  info->lo_flags   = 0;
- memcpy(info->lo_file_name, clo->clo_file_name, LO_NAME_SIZE);
+ strncpy(info->lo_file_name, clo->underlying_filename, LO_NAME_SIZE);
+ info->lo_file_name[LO_NAME_SIZE-1]=0;
  return 0;
 }
 
@@ -850,8 +1017,6 @@ static int cloop_get_status64(struct cloop_device *clo,
  if (!err && copy_to_user(arg, &info64, sizeof(info64))) err = -EFAULT;
  return err;
 }
-/* EOF get/set_status */
-
 
 static int cloop_ioctl(struct block_device *bdev, fmode_t mode,
 	unsigned int cmd, unsigned long arg)
@@ -1020,6 +1185,11 @@ static void cloop_dealloc(int cloop_num)
  cloop_dev[cloop_num] = NULL;
 }
 
+/* LZ4 Stuff */
+#if (defined USE_LZ4_INTERNAL)
+#include "lz4_kmod.c"
+#endif
+
 static int __init cloop_init(void)
 {
  int error=0;
@@ -1060,7 +1230,7 @@ static int __init cloop_init(void)
      initial_file=NULL; /* if IS_ERR, it's NOT open. */
     }
    else
-     error=cloop_set_file(0,initial_file,file);
+     error=cloop_set_file(0,initial_file);
    if(error)
     {
      printk(KERN_ERR
@@ -1068,9 +1238,6 @@ static int __init cloop_init(void)
             cloop_name, file, error);
      goto init_out_dealloc;
     }
-   if(namelen >= LO_NAME_SIZE) namelen = LO_NAME_SIZE-1;
-   memcpy(cloop_dev[0]->clo_file_name, file, namelen);
-   cloop_dev[0]->clo_file_name[namelen] = 0;
   }
  return 0;
 init_out_dealloc:
