@@ -1,0 +1,22 @@
+#!/bin/sh -e
+# source debconf library
+#export DEBCONF_DEBUG=developer
+. /usr/share/debconf/confmodule
+
+if [ "$1" = "configure" ] ; then
+   db_get cloop/createdevs || true
+   if [ "$RET" = "true" ] ; then
+      if test ! -e /dev/cloop; then
+         for x in `seq 0 7` ; do
+            mknod /dev/cloop$x b 240 $x || true
+            ln -sf cloop0 /dev/cloop || true
+         done
+      fi
+   fi
+fi
+
+if [ "`uname -r`" = _KVERS_ ] ; then
+   depmod -a &
+fi
+
+#DEBHELPER#

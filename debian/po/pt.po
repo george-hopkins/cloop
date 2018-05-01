@@ -1,0 +1,29 @@
+# Luís Ferreira <anarka@gmail.com>, 2005.
+#
+# 2005-11-03 - Luís Ferreira - Initial translation
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: cloop 2.02.1+eb.10_templates\n"
+"Report-Msgid-Bugs-To: blade@debian.org\n"
+"POT-Creation-Date: 2006-08-02 23:44+0200\n"
+"PO-Revision-Date: 2005-11-03 15:41+0100\n"
+"Last-Translator: Luís Ferreira <anarka@anarka.org>\n"
+"Language-Team: Portuguese <traduz@debianpt.org>\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"X-Generator: KBabel 1.10.2\n"
+"Plural-Forms:  nplurals=2; plural=(n != 1);\n"
+
+#. Type: boolean
+#. Description
+#: ../cloop-module-_KVERS_.templates:1001
+msgid "Create device nodes for compressed loop devices?"
+msgstr "Criar os 'device nodes' para dispositivos loop comprimidos?"
+
+#. Type: boolean
+#. Description
+#: ../cloop-module-_KVERS_.templates:1001
+msgid "Should the necessary device files in /dev be generated now?"
+msgstr "Gerar os ficheiros de dispositivos necessários em /dev agora?"

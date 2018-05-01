@@ -17,9 +17,6 @@
 #include <netinet/in.h>
 #include <inttypes.h>
 
-#ifdef __CYGWIN__
-typedef uint64_t loff_t;
-#endif
 #ifndef be64toh
 static __inline __uint64_t
 __bswap64(__uint64_t _x)

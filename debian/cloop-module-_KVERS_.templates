@@ -1,0 +1,5 @@
+Template: cloop/createdevs
+Type: boolean
+Default: true
+_Description: Create device nodes for compressed loop devices?
+ Should the necessary device files in /dev be generated now?

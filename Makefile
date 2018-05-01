@@ -53,16 +53,17 @@ advancecomp-1.15/advfs:
 	( cd advancecomp-1.15 ; ./configure && $(MAKE) advfs )
 
 extract_compressed_fs: extract_compressed_fs.c
-	$(CC) -Wall -O2 -s -o $@ $< -lz
+	$(CC) -Wall -O2 $(CFLAGS) $(LDFLAGS) -o $@ $< -lz
 
 cloop_suspend: cloop_suspend.o
 	$(CC) -Wall -O2 -s -o $@ $<
 
 clean:
-	rm -rf create_compressed_fs extract_compressed_fs zoom *.o *.ko Module.symvers .cloop* .compressed_loop.* .tmp*
+	rm -rf create_compressed_fs extract_compressed_fs zoom *.o *.ko Module.symvers .cloop* .compressed_loop.* .tmp* modules.order cloop.mod.c
 	[ -f advancecomp-1.15/Makefile ] && $(MAKE) -C advancecomp-1.15 distclean || true
 
 dist: clean
 	cd .. ; \
 	tar -cf - cloop/{Makefile,*.[ch],CHANGELOG,README} | \
 	bzip2 -9 > $(HOME)/redhat/SOURCES/cloop.tar.bz2
+

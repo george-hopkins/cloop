@@ -1,0 +1,156 @@
+<!DOCTYPE refentry PUBLIC "-//OASIS//DTD DocBook V4.1//EN">
+<refentry id="createcompressedfs">
+
+<refmeta>
+	<refentrytitle>create_compressed_fs</refentrytitle>
+	<manvolnum>1</manvolnum>
+</refmeta>
+
+<refnamediv>
+	<refname>create_compressed_fs, extract_compressed_fs</refname>
+	<refpurpose>convert and extract a filesystem to/from a cloop volume</refpurpose>
+</refnamediv>
+
+<refsynopsisdiv>
+	<cmdsynopsis>
+		<command>create_compressed_fs</command>
+		<arg choice="opt">OPTIONS</arg>
+		<arg choice="req">image</arg>
+		<arg choice="req">outfile</arg>
+	</cmdsynopsis>
+	<cmdsynopsis>
+		<command>extract_compressed_fs</command>
+		<arg choice="req">filename</arg>
+	</cmdsynopsis>
+</refsynopsisdiv>
+
+<refsect1>
+    <title>DESCRIPTION</title>
+    <para><command>create_compressed_fs</command> compresses a filesystem image
+        to a compressed image suitable for mounting with the cloop driver.
+    </para>
+    <para><command>extract_compressed_fs</command> uncompresses a filesystem image
+        created by create_compressed_fs.
+    </para>
+</refsect1>
+
+<refsect1>
+    <title>OPTIONS</title>
+    <para>
+        Run the <command>create_compressed_fs</command> 
+        command with "-h" to get a list of available options and description of data
+        storages modes and advanced usage (eg. with a network cluster). Blocksize
+        must be a multiple of 512 bytes.
+    </para>
+    <para>
+       There is an alternative set of options which is supported for
+       compatibility with the original version of create_compressed_fs. When
+       it's called with a pure number as output, it assumes the old syntax and
+       maps the default options to memory mode and the block size to the
+       number. -b for best mode is recognized as well.
+    </para>
+
+</refsect1>
+<refsect1>
+    <title>EXAMPLES</title>
+
+    <para>create_compressed_fs image.ext2 image.ext2.cloop</para>
+    <para>extract_compressed_fs image.ext2.cloop | cmp image.ext2 -</para>
+
+    <para>
+        mkcmd="genisoimage -joliet-long -D -r data"
+    </para>
+    <para>
+        $mkcmd | create_compressed_fs -s $($mkcmd --print-size)i - file.cloop
+    </para>
+
+    <para>
+        create_compressed_fs image.iso -S image.cloop.a0 - | split -b 1024m - image.cloop.
+    </para>
+    <para>
+        cat image.cloop.* | cdrskin -
+    </para>
+
+</refsect1>
+
+<refsect1>
+    <title>NOTES</title>
+    <para>
+        For optimal performance, create_compressed_fs should be used with real
+        input and output files.
+     </para>
+     <para>
+        Operation with STDIN or STDOUT is complicated. create_compressed_fs
+        cannot operate as a simple pipe filter because it needs to know some
+        things in advance: a) the data length, b) the block lengths calculated
+        during the compression. This meta data needs to be stored in the header
+        AFTER the compression is trough, therefore it is not possible to push
+        all generated data to STDOUT on-the-fly.
+     </para>
+     <para>
+        And so compromises need to be made. The simpliest method (used by the
+        ancient create_compressed_fs) is a big temporary memory buffer (option
+        <option>-m</option>) to keep compressed data in RAM. However, the
+        overall system performance suffers from such usage and this may drive
+        other applications into OOM conditions.
+     </para>
+     <para>
+        The next alternative to this is storing the temprorary data in an extra
+        file aside (the <option>-f</option> option). This improves the overall
+        system performance but create_compressed_fs operation is slower because
+        it needs to copy data back when it's finished. Plus, double disk space
+        for the output is required. If disk space is limited, the
+        <option>-r</option> option could be used (reusing output file for
+        temporary data), however the speed of the copy-back step may decrease
+        significantly.
+     </para>
+     <para>
+        There are strategies to avoid the temporary data storage completely.
+        First, only files should be used. If that is not possible, then the
+        output should be a (seekable) file and the input data length should be
+        known (either specified with the <option>-s</option> option or detected from the input
+        file size).
+     </para>
+     <para>
+        Second, it is possible to store the header of the cloop volume in a
+        separate file. After the work, header can be merged together with the
+        compressed data with the cat command. The output data can be written to
+        stdout. Since the header is stored too late, this method is not very
+        usefull for immediate data transfer.  However, it allows to do some
+        tricks like piping to the split utility (to store DVD images in smaller
+        files on VFAT) or piping data trough ssh if the local system has no
+        disk space (and copying the header separately).
+     </para>
+</refsect1>
+
+<refsect1>
+  <title>MOUNTING</title>
+  <para>You can pass an option to the cloop module on loading, or use losetup or losetup functionality of the mount command. Examples:</para>
+
+  <para>insmod cloop.o file=/path/to/compressed/image</para>
+  <para>losetup /dev/cloop1 /path/to/compressed/image</para>
+  <para>mount -o ro -t whatever /dev/cloop /mnt/compressed</para>
+  <para>mount cl /mnt/misc -oloop=/dev/cloop0</para>
+</refsect1>
+
+<refsect1>
+   <title>SEE ALSO</title>
+   <para>
+      <command>/usr/share/doc/cloop-utils/*</command>, <command>/usr/share/doc/cloop-src/*</command>
+   </para>
+</refsect1>
+
+<refsect1>
+    <title>AUTHOR</title>
+
+    <para>
+       This manual page was written by Eduard Bloch
+       <email>blade@debian.org</email> for the <productname>Debian
+          GNU/Linux</productname> system (but may be used by others).  Permission is
+       granted to copy, distribute and/or modify this document under the terms of
+       the <acronym>GNU</acronym> GPLv2.
+    </para>
+
+ </refsect1>
+
+</refentry>

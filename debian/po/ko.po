@@ -1,0 +1,29 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) YEAR THE PACKAGE'S COPYRIGHT HOLDER
+# This file is distributed under the same license as the PACKAGE package.
+# FIRST AUTHOR <EMAIL@ADDRESS>, YEAR.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: PACKAGE VERSION\n"
+"Report-Msgid-Bugs-To: blade@debian.org\n"
+"POT-Creation-Date: 2006-08-02 23:44+0200\n"
+"PO-Revision-Date: 2011-07-01 16:15+0900\n"
+"Last-Translator: 임영재 <dladudwo86@naver.com>\n"
+"Language-Team: LANGUAGE <LL@li.org>\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+
+#. Type: boolean
+#. Description
+#: ../cloop-module-_KVERS_.templates:1001
+msgid "Create device nodes for compressed loop devices?"
+msgstr "드라이브 노드를 만들기 위해 압축 하세요"
+
+#. Type: boolean
+#. Description
+#: ../cloop-module-_KVERS_.templates:1001
+msgid "Should the necessary device files in /dev be generated now?"
+msgstr "/dev에 필수 파일을 생성하시겠습니까?"
+

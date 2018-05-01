@@ -1,13 +1,20 @@
-This package was debianized by Klaus Knopper <cloop@knopper.net> on
-Thu,  7 Jun 2001 04:08:58 +0200.
+This package was debianized by Eduard Bloch <blade@debian.org>
+on Fri, 24 Oct 2014 20:48:57 +0200.
 
-Current maintainer is Eduard Bloch <blade@debian.org>.
+It was forked with minimal modifications from original source located at
+https://github.com/KlausKnopper/cloop/.
 
-It was downloaded from http://www.knopper.net/knoppix/
+Upstream Author: 
 
-Upstream Author: Klaus Knopper <cloop@knopper.net>
+ Klaus Knopper <cloop@knopper.net>
+ Paul `Rusty' Russell
 
 Copyright: 
+
+ Copyright (C) 2004-2009 Klaus Knopper <cloop@knopper.net>
+ Copyright (C) 1999-2003 by Paul `Rusty' Russell & Klaus Knopper
+
+License:
 
 This package contains utilities and kernel modules source provided under the
 GNU GENERAL PUBLIC LICENSE Version 2, available in the file

@@ -1,0 +1,52 @@
+# cloop po-debconf translation to Spanish
+# Copyright (C) 2009 Software in the Public Interest
+# This file is distributed under the same license as the cloop package.
+#
+# Changes:
+# - Initial translation
+#       Shukoh <felix_os69@hotmail.com> , 2009
+#
+#
+#  Traductores, si no conoce el formato PO, merece la pena leer la
+#  documentación de gettext, especialmente las secciones dedicadas a este
+#  formato, por ejemplo ejecutando:
+#         info -n '(gettext)PO Files'
+#         info -n '(gettext)Header Entry'
+#
+# Equipo de traducción al español, por favor lean antes de traducir
+# los siguientes documentos:
+#
+# - El proyecto de traducción de Debian al español
+#   http://www.debian.org/intl/spanish/coordinacion
+#   especialmente las notas de traducción en
+#   http://www.debian.org/intl/spanish/notas
+#
+# - La guía de traducción de po's de debconf:
+#   /usr/share/doc/po-debconf/README-trans
+#   o http://www.debian.org/intl/l10n/po-debconf/README-trans
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: cloop-2.6.28.2.2\n"
+"POT-Creation-Date: 2006-08-02 23:44+0200\n"
+"PO-Revision-Date: 2009-11-08 21:14+0100\n"
+"Last-Translator: Shuko <felix_os69@hotmail.com>\n"
+"Language-Team: Debian Spanish <debian-l10n-spanish@lists.debian.org>\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+
+#
+#
+#. Type: boolean
+#. Description
+#: ../cloop-module-_KVERS_.templates:1001
+msgid "Create device nodes for compressed loop devices?"
+msgstr "¿Desea crear los nodos de dispositivo para los dispositivos loop comprimidos?"
+
+#. Type: boolean
+#. Description
+#: ../cloop-module-_KVERS_.templates:1001
+msgid "Should the necessary device files in /dev be generated now?"
+msgstr "¿Desea generar ahora los archivos necesarios en «/dev»?"
+

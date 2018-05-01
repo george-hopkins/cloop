@@ -1,54 +1,9 @@
-cloop (3.14.1.2) unstable; urgency=low
-
-  * Fix the build with kernel 3.19+ (f_dentry macro removal)
-
- -- Eduard Bloch <blade@debian.org>  Sun, 03 May 2015 13:15:58 +0200
-
-cloop (3.14.1.1) unstable; urgency=medium
-
-  * Fixes build failure (old bashism)
-  * Passing some configure flags to embedded compressor implementation
-  * Bugfix in create_compressed_fs (fallout from previous change)
-  * Restored support for kernel versions >= 3.11
-  * Moved README.md (is just text) to README as hard copy, not symlink
-
- -- Eduard Bloch <blade@debian.org>  Sat, 25 Oct 2014 11:48:40 +0200
-
-cloop (3.14.1) unstable; urgency=medium
-
-  * New upstream version
-    + updated version, works with kernel versions 3.14..3.17 (closes: #719128)
-  * New location, now originating on Klaus Knopper's github version
-  * Changed package package type to native until the mode of cooperation with
-    upstream is fully clarified
-  * Overhaul of debian packaging, changed to dh(7) style, auto-updating
-    autotools-dev files on build now (closes: #727288)
-  * Enabled hardening, fixed some minor issues in advfs.cc
-  * Removed special hacks for ancient Cygwin and Mac OS X versions in
-    extract_compressed_fs.c (closes: #370204)
-  * Italian translation of debconf messages from Beatrice Torracca
-    (closes: #714004)
-
- -- Eduard Bloch <blade@debian.org>  Sat, 25 Oct 2014 00:08:27 +0200
-
 cloop (3.14-1) unstable; urgency=medium
 
   * Updates for Kernel >= 3.14
   * Preparing for git repository upload
 
  -- Klaus Knopper <knoppix@knopper.net>  Tue, 26 Aug 2014 17:14:37 +0200
-
-cloop (2.6.39.2-1) unstable; urgency=low
-
-  * Imported new upstream version (closes: 436090, 632603)
-  * Converted Debian source format to 3.0 (quilt), also using xz where possible
-  * Move linux-headers-2.6 dependency to linux-headers (closes: 628872)
-  * Merged extra changelog.knoppix file (documenting Knopper's branch changes)
-    into common debian/changelog file, dropped the build time merging mess
-  * Danish translation of the debconf templates from Joe Dalton (closes: 627713)
-  * Korean translation of the debconf templates from 임영재 (closes: 632291)
- 
- -- Eduard Bloch <blade@debian.org>  Mon, 12 Dec 2011 23:40:53 +0100
 
 cloop (2.639-2) unstable; urgency=low
 
@@ -82,23 +37,17 @@ cloop (2.634-1) unstable; urgency=low
 
  -- Klaus Knopper <knoppix@knopper.net>  Wed, 25 Aug 2010 13:36:01 +0200
 
-cloop (2.6.31.1.1) unstable; urgency=low
+cloop (2.631-1) unstable; urgency=low
 
-  * Picked up relevant changes from upstream version 2.631-1
-  * Updated config.{sub,guess} (closes: #535841)
-  * added Spanish debconf translation from Shukoh (closes: #557002)
+  * Changes for new kernel 2.6.31 block device handling
 
- -- Eduard Bloch <blade@debian.org>  Thu, 14 Jan 2010 22:28:22 +0100
+ -- Klaus Knopper <knoppix@knopper.net>  Tue, 15 Sep 2009 21:26:57 +0200
 
-cloop (2.6.28.2.2) unstable; urgency=low
+cloop (2.629-1) unstable; urgency=low
 
-  * STL related fixes (using numeric_limits instead of INT_MAX, 
-    closes: #521908) and minor compiler warning fixes in extract_compressed_fs.c
-  * Changed default thread count to dynamic configuration, unless set by user
-  * stop bothering about "too much data" with -s switch when the overall data
-    size has hit the block boundaries
+  * Acquired Eduard Blochs new advfs.cc and extract_compressed_fs.c
 
- -- Eduard Bloch <blade@debian.org>  Mon, 30 Mar 2009 23:38:12 +0200
+ -- Klaus Knopper <knoppix@knopper.net>  Wed, 15 Apr 2009 10:59:32 +0200
 
 cloop (2.628-2) unstable; urgency=low
 
@@ -150,27 +99,6 @@ cloop (2.06-1) unstable; urgency=low
   * Added "cloop_suspend" ioctl and utility contributed by Fabian Franz.
 
  -- Klaus Knopper <knoppix@knopper.net>  Sun, 25 Feb 2007 22:25:52 +0100
-
-cloop (2.6.28.2.1) unstable; urgency=low
-
-  * Big merge with version 2.628-2 from Knoppix sources
-  * Moved Knoppix' changelog file to changelog.knoppix, delivered with another
-    older CHANGELOG as a single upstream changelog file
-  * Beautification of control and copyright files, dropped postrm
-
- -- Eduard Bloch <blade@debian.org>  Mon,  4 Dec 2006 00:11:52 +0100
-
-cloop (2.05~20060829-1) unstable; urgency=low
-
-  * Merged with Klaus' unreleased version 2.05, compiles with >> 2.6.18.1.
-  * Added more paranoid check for unreadable initial file passed as parameter,
-    aborting earlier.
-  * added forgotten isofs block factor in mkisofs/genisoimage examples and
-    typo fixes
-  * better description of the compatibility option mode
-  * set _FILE_OFFSET_BITS to 64 in advfs.cc
-
- -- Eduard Bloch <blade@debian.org>  Sun, 03 Dec 2006 19:19:05 +0100
 
 cloop (2.05-1) unstable; urgency=low
 

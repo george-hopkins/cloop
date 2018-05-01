@@ -1,22 +1,22 @@
 Source: cloop
 Section: misc
 Priority: optional
-Maintainer: Klaus Knopper <knoppix@knopper.net>
-Build-Depends: debhelper (>> 3.0.0), zlib1g-dev
-Standards-Version: 3.5.8
+Maintainer: Eduard Bloch <blade@debian.org>
+Build-Depends: debhelper (>> 9), zlib1g-dev, xz-utils, autotools-dev
+Standards-Version: 3.9.6
 
 Package: cloop-utils
 Architecture: any
-Depends: ${shlibs:Depends}
-Description: Tools for handling cloop compressed volumes
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: Tools for handling with cloop compressed volumes
  Utilities for creating and unpacking compressed loopback files
  for cloop.
 
-Package: cloop-module-2.6.39.2
-Recommends: cloop-utils
-Architecture: any
-Description: The compressed loopback block device kernel module
- Cloop is the driver module for transparent access to a
- blockwise compressed partition image, containing an ISO9660 (or other)
- filesystem.
+Package: cloop-src
+Architecture: all
+Depends: module-assistant, debhelper (>= 5.0.37), xz-utils, ${misc:Depends}
+Description: Source of the compressed loopback device module
+ This package contains a source package for building the cloop module.
+ You can use module-assistant or make-kpkg to build a modules package for
+ specific kernel.
 

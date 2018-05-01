@@ -98,10 +98,6 @@ using namespace std;
 
 int maxlen(0);
 
-#ifdef __CYGWIN__
-typedef uint64_t loff_t;
-#endif
-
 # if defined(linux) || defined(__linux__)
 #include <asm/byteorder.h>
 #define ENSURE64UINT(x) __cpu_to_be64(x)
@@ -471,8 +467,8 @@ void *outputFetch(void *ptr) {
                     posFetch,
                     (int)(((float)pool[pos].compLen*(float)100) / (float)blocksize ),
                     (int)(((float) total_compressed*100) / (((float)posFetch+1)*(float)blocksize)),
-                    ((posFetch+1)*blocksize)/per,
-                    ( per*(expected_blocks-posFetch-1) ) / (posFetch+1)
+                    (int)(((posFetch+1)*blocksize)/per),
+                    (int)((per*(expected_blocks-posFetch-1) ) / (posFetch+1))
                    );
 #if 0
             fprintf(stderr, 
@@ -842,6 +838,8 @@ int main(int argc, char **argv)
     if(reuse_as_tempfile && tempfile) die("outfile reuse with another tempfile does not make sense");
     if(sepheader && (reuse_as_tempfile || targetkind!=TOFILE ))
         die("Separate header file only with pure file output supported"); // writing twice? Later... or never
+    
+    struct stat buf;
 
     if(!tofile)
         die("Unknown output file. Provide a path name or - for STDOUT");
@@ -849,7 +847,8 @@ int main(int argc, char **argv)
         die("Unknown input file. Provide a path name or - for STDIN");
 
     if(strcmp(tofile, "-")) {
-        truncate(tofile,0);
+        if(0 == stat(tofile, &buf) && truncate(tofile,0))
+            die("Cannot resize the existing target file");
         targetfh=fopen(tofile, "w+");
         if(!targetfh)
             die("Opening output file for writing");
@@ -861,7 +860,6 @@ int main(int argc, char **argv)
     }
 
     if(strcmp(fromfile, "-")) {
-        struct stat buf;
         if(!datasize) {
             stat(fromfile, &buf);
             datasize=buf.st_size;
@@ -1204,64 +1202,3 @@ int setup_connection(char *hostname)
 	    return -1;
     return s ;
 }
-
-#if 0
-#error this is crap, stupid idea and does work worse than the split command
-string outbase, outtemp;
-
-inline void makename(size_t pos) {
-    if(!chunksize)
-        outtemp=outbase;
-    char suf = 'a' + pos/chunksize;
-    outtemp=outbase+"."+suf;
-}
-
-void split_fopen( char *path, char *mode) {
-    if(out) {
-        fclose(out);
-        out=NULL;
-    }
-    if(chunk_size) {
-        outbase=path;
-        out_mode=mode;
-        makename(0);
-        path=outtemp.c_str();
-    }
-    out=fopen(path, mode);
-}
-
-void split_fclose() {
-    if(out)
-        fclose(out);
-}
-
-/*
- * Write out or die with a meaningful error message.
- */
-int split_fwrite(void *ptr, size_t nmemb) {
-    char *src = (char *) ptr;
-    if(chunk_size) {
-        off_t curpos = ftello(realfh);
-        if( (curpos+nmemb) > chunk_size) {
-            off_t lenA=chunk_size-curpos;
-            if(lenA != fwrite(src, 1, lenA, realfh))
-                goto write_error;
-            realname[strlen(realname)-1]++;
-            fflush(realfh);
-            realfh=fopen(realname, out_mode);
-            if(!realfh) die("Problems creating "<< realname);
-            if(nmemb-lenA != fwrite(src+lenA, 1, nmemb-lenA, realfh))
-                goto write_error;
-        }
-        else {
-            if(nmemb != fwrite(ptr, 1, nmemb, realfh))
-                goto write_error;
-        }
-    }
-    else
-        return fwrite(ptr, 1, nmemb, datafh);
-    return nmemb;
-
-write_error:
-}
-#endif

@@ -296,12 +296,21 @@ static int cloop_handle_request(struct cloop_device *clo, struct request *req)
  int buffered_blocknum = -1;
  int preloaded = 0;
  loff_t offset     = (loff_t) blk_rq_pos(req)<<9; /* req->sector<<9 */
+#if LINUX_VERSION_CODE < KERNEL_VERSION(3,14,0)
+struct bio_vec *bvec;
+#else 
  struct bio_vec bvec;
+#endif
  struct req_iterator iter;
  rq_for_each_segment(bvec, req, iter)
   {
+#if LINUX_VERSION_CODE < KERNEL_VERSION(3,14,0)
+   unsigned long len = bvec->bv_len;
+   char *to_ptr      = kmap(bvec->bv_page) + bvec->bv_offset;
+#else
    unsigned long len = bvec.bv_len;
    char *to_ptr      = kmap(bvec.bv_page) + bvec.bv_offset;
+#endif
    while(len > 0)
     {
      u_int32_t length_in_buffer;
@@ -341,7 +350,11 @@ static int cloop_handle_request(struct cloop_device *clo, struct request *req)
      len         -= length_in_buffer;
      offset      += length_in_buffer;
     } /* while inner loop */
+#if LINUX_VERSION_CODE < KERNEL_VERSION(3,14,0)
+   kunmap(bvec->bv_page);
+#else
    kunmap(bvec.bv_page);
+#endif
   } /* end rq_for_each_segment*/
  return ((buffered_blocknum!=-1) || preloaded);
 }
@@ -427,7 +440,7 @@ static int cloop_set_file(int cloop_num, struct file *file, char *filename)
  unsigned int i, offsets_read, total_offsets;
  int isblkdev;
  int error = 0;
- inode = file->f_dentry->d_inode;
+ inode = file->f_path.dentry->d_inode;
  isblkdev=S_ISBLK(inode->i_mode)?1:0;
  if(!isblkdev&&!S_ISREG(inode->i_mode))
   {
