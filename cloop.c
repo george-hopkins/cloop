@@ -257,9 +257,9 @@ static int uncompress(struct cloop_device *clo, u_int32_t block_num, u_int32_t c
    {
     size_t outputSize = clo->head.block_size;
     /* We should adjust outputSize here, in case the last block is smaller than block_size */
-    err = lz4_decompress(clo->compressed_buffer, (size_t *) &compressed_length,
-                         clo->buffer[clo->current_bufnum], outputSize);
-    if (err >= 0) 
+    err = LZ4_decompress_safe(clo->compressed_buffer, clo->buffer[clo->current_bufnum],
+                              compressed_length, clo->head.block_size);
+    if (err >= 0)
     {
      err = 0;
      *uncompressed_length = outputSize;
@@ -490,10 +490,10 @@ static void cloop_do_request(struct request_queue *q)
    int rw;
  /* quick sanity checks */
    /* blk_fs_request() was removed in 2.6.36 */
-   if (unlikely(req == NULL || (req->cmd_type != REQ_TYPE_FS)))
+   if (unlikely(req == NULL))
     goto error_continue;
    rw = rq_data_dir(req);
-   if (unlikely(rw != READ && rw != READA))
+   if (unlikely(rw != READ))
     {
      DEBUGP("cloop_do_request: bad command\n");
      goto error_continue;
@@ -509,7 +509,6 @@ static void cloop_do_request(struct request_queue *q)
    continue; /* next request */
   error_continue:
    DEBUGP(KERN_ERR "cloop_do_request: Discarding request %p.\n", req);
-   req->errors++;
    __blk_end_request_all(req, -EIO);
   }
 }
@@ -926,7 +925,7 @@ static int cloop_get_status(struct cloop_device *clo,
  struct kstat stat;
  int err;
  if (!file) return -ENXIO;
- err = vfs_getattr(&file->f_path, &stat);
+ err = vfs_getattr(&file->f_path, &stat, STATX_BASIC_STATS, AT_STATX_SYNC_AS_STAT);
  if (err) return err;
  memset(info, 0, sizeof(*info));
  info->lo_number  = clo->clo_number;
